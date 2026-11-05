@@ -1,0 +1,95 @@
+x-backend-env: &backend-env
+  INS_DATABASE_URL: postgresql+asyncpg://ins:ins@postgres:5432/ins
+  INS_REDIS_URL: redis://redis:6379/0
+  INS_STORAGE_DIR: /data/storage
+  INS_ADMIN_PASSWORD: ${INS_ADMIN_PASSWORD:-admin}
+  INS_AUTH_SECRET: ${INS_AUTH_SECRET:-change-me-in-production-please-use-32-chars}
+  INS_INSTAGRAM_LOGIN: ${INS_INSTAGRAM_LOGIN:-}
+  INS_INSTAGRAM_SESSION_FILE: ${INS_INSTAGRAM_SESSION_FILE:-}
+  INS_CORS_ORIGINS: http://localhost:5173,http://localhost:8080
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ins
+      POSTGRES_PASSWORD: ins
+      POSTGRES_DB: ins
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ins -d ins"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+    environment: *backend-env
+    volumes:
+      - insdata:/data
+      - ./secrets:/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+    command: ["arq", "app.worker.WorkerSettings"]
+    environment: *backend-env
+    volumes:
+      - insdata:/data
+      - ./secrets:/secrets:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  insdata:
