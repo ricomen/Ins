@@ -1,0 +1,106 @@
+name: ins
+
+x-backend-env: &backend-env
+  INS_DATABASE_URL: postgresql+asyncpg://ins:${POSTGRES_PASSWORD:-ins}@postgres:5432/ins
+  INS_REDIS_URL: redis://redis:6379/0
+  INS_STORAGE_DIR: /data/storage
+  INS_ADMIN_PASSWORD: ${INS_ADMIN_PASSWORD:?set INS_ADMIN_PASSWORD in .env}
+  INS_AUTH_SECRET: ${INS_AUTH_SECRET:?set INS_AUTH_SECRET in .env}
+  INS_INSTAGRAM_LOGIN: ${INS_INSTAGRAM_LOGIN:-}
+  INS_INSTAGRAM_SESSION_FILE: ${INS_INSTAGRAM_SESSION_FILE:-}
+  INS_CORS_ORIGINS: ${INS_CORS_ORIGINS:-http://localhost:8080}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ins
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ins}
+      POSTGRES_DB: ins
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ins -d ins"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    logging: *logging
+
+  api:
+    image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}-backend:${IMAGE_TAG:-latest}
+    pull_policy: always
+    environment: *backend-env
+    volumes:
+      - insdata:/data
+      - ./secrets:/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${INS_API_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    logging: *logging
+
+  worker:
+    image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}-backend:${IMAGE_TAG:-latest}
+    pull_policy: always
+    command: ["arq", "app.worker.WorkerSettings"]
+    environment: *backend-env
+    volumes:
+      - insdata:/data
+      - ./secrets:/secrets:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+
+  frontend:
+    image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}-frontend:${IMAGE_TAG:-latest}
+    pull_policy: always
+    ports:
+      - "${INS_HTTP_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  pgdata:
+  insdata:
